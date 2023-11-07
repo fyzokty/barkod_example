@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:developer';
 import 'dart:io';
 
@@ -5,32 +6,99 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart';
+import 'package:touchable/touchable.dart';
 
-class BarcodePage extends StatefulWidget {
-  const BarcodePage({super.key});
+import 'package:barcode_example/util/barcode_painter.dart';
+
+class BarcodeView extends StatefulWidget {
+  const BarcodeView({super.key, required this.onBarcodeTap});
+
+  final BarcodeCallback onBarcodeTap;
 
   @override
-  State<BarcodePage> createState() => _BarcodePageState();
+  State<BarcodeView> createState() => _BarcodeViewState();
 }
 
-class _BarcodePageState extends State<BarcodePage> {
+class _BarcodeViewState extends State<BarcodeView> {
+  late Timer timer;
+
   bool isBusy = false;
   bool canProcess = true;
   BarcodeScanner barcodeScanner = BarcodeScanner();
 
+  bool isPermissionDenied = false;
   bool isCameraInitialize = false;
   List<CameraDescription> cameras = [];
   List<CameraDescription> backCameras = [];
-  List<CameraDescription> frontCameras = [];
 
   late CameraDescription camera;
-  int cameraIndex = -1;
   late CameraController cameraController;
+  int cameraIndex = -1;
+
+  final _cameraLensDirection = CameraLensDirection.back;
+
+  List<Barcode> _barcodes = [];
+  InputImage? _inputImage;
+
+  final _orientations = {
+    DeviceOrientation.portraitUp: 0,
+    DeviceOrientation.landscapeLeft: 90,
+    DeviceOrientation.portraitDown: 180,
+    DeviceOrientation.landscapeRight: 270,
+  };
 
   @override
   void initState() {
+    timer = Timer(Duration.zero, () {});
     initCamera();
     super.initState();
+  }
+
+  @override
+  void dispose() {
+    stopCamera();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Builder(
+      builder: (context) {
+        if (isPermissionDenied) return const Center(child: Text('Kamera kullanmak için izin gerekiyor'));
+        if (cameras.isEmpty && isCameraInitialize) return const Center(child: Text('Kamera Bulunamadı'));
+        if (cameras.isEmpty && !isCameraInitialize) return const Center(child: Text('Kamera Başlatılıyor'));
+        if (cameraController.value.isInitialized == false) return const Center(child: Text("Kamera Başlatılamadı"));
+        return Stack(
+          children: [
+            Align(
+              alignment: Alignment.topCenter,
+              child: CameraPreview(
+                cameraController,
+                child: _inputImage != null
+                    ? Positioned.fill(
+                        child: CanvasTouchDetector(
+                          gesturesToOverride: const [GestureType.onTapDown, GestureType.onTapUp],
+                          builder: (context) {
+                            return CustomPaint(
+                              painter: BarcodeDetectorPainter(
+                                context: context,
+                                barcodes: _barcodes,
+                                imageSize: _inputImage!.metadata!.size,
+                                rotation: _inputImage!.metadata!.rotation,
+                                cameraLensDirection: _cameraLensDirection,
+                                onBarcodeTap: widget.onBarcodeTap,
+                              ),
+                            );
+                          },
+                        ),
+                      )
+                    : null,
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> initCamera() async {
@@ -52,9 +120,6 @@ class _BarcodePageState extends State<BarcodePage> {
           log("SEÇİLEN KAMERA =====> $camera");
         }
       }
-      if (cameras[i].lensDirection == CameraLensDirection.front) {
-        frontCameras.add(cameras[i]);
-      }
     }
     isCameraInitialize = true;
     if (cameraIndex == -1 || cameras.isEmpty) {
@@ -63,31 +128,6 @@ class _BarcodePageState extends State<BarcodePage> {
       return;
     }
     await startCamera();
-  }
-
-  @override
-  void dispose() {
-    cameraController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(),
-      body: Builder(
-        builder: (context) {
-          if (cameras.isEmpty && isCameraInitialize) return const Center(child: Text('Kamera Bulunamadı'));
-          if (cameras.isEmpty && !isCameraInitialize) return const Center(child: Text('Kamera Başlatılıyor'));
-          if (cameraController.value.isInitialized == false) return const Center(child: Text("Kamera Başlatılamadı"));
-          return Stack(
-            children: [
-              Center(child: CameraPreview(cameraController)),
-            ],
-          );
-        },
-      ),
-    );
   }
 
   Future<void> startCamera() async {
@@ -102,23 +142,35 @@ class _BarcodePageState extends State<BarcodePage> {
       enableAudio: false,
     );
 
-    cameraController.initialize().then((value) {
+    cameraController.initialize().then((_) {
       if (!mounted) {
         return;
       }
       setState(() {});
+      cameraController.lockCaptureOrientation(DeviceOrientation.portraitUp);
       cameraController.startImageStream(processImage);
+    }).catchError((e) {
+      // TODO(fyzokty): Permission Handler kullan
+      if (e is CameraException) {
+        e.code == 'CameraAccessDenied';
+        isPermissionDenied = true;
+      }
+      log(e.toString());
     });
   }
 
-  final _orientations = {
-    DeviceOrientation.portraitUp: 0,
-    DeviceOrientation.landscapeLeft: 90,
-    DeviceOrientation.portraitDown: 180,
-    DeviceOrientation.landscapeRight: 270,
-  };
+  Future<void> stopCamera() async {
+    await cameraController.stopImageStream().catchError((e) => log(e.toString()));
+    await cameraController.dispose();
+  }
 
   void processImage(CameraImage cameraImage) async {
+    if (!canProcess) return;
+    if (timer.isActive) return;
+    timer = Timer(const Duration(milliseconds: 200), () {
+      canProcess = true;
+    });
+    canProcess = false;
     final inputImage = cameraToInput(cameraImage);
     if (inputImage == null) return;
     await processUIImage(inputImage);
@@ -127,15 +179,17 @@ class _BarcodePageState extends State<BarcodePage> {
   Future<void> processUIImage(InputImage inputImage) async {
     if (isBusy) return;
     isBusy = true;
-
     final barcodes = await barcodeScanner.processImage(inputImage);
-
-    log(barcodes.toString());
-    log("BARCODE LENGHT =======> ${barcodes.length}");
-
+    if (!mounted) return;
+    if (inputImage.metadata?.size != null && inputImage.metadata?.rotation != null) {
+      _inputImage = inputImage;
+      _barcodes = barcodes;
+    }
     isBusy = false;
+    if (mounted) {
+      setState(() {});
+    }
     if (barcodes.isEmpty) return;
-    log("BARKOD::: ${barcodes.first.rawValue}");
   }
 
   InputImage? cameraToInput(CameraImage cameraImage) {
@@ -149,16 +203,14 @@ class _BarcodePageState extends State<BarcodePage> {
       var rotationCompensation = _orientations[cameraController.value.deviceOrientation];
       if (rotationCompensation == null) return null;
       if (camera.lensDirection == CameraLensDirection.front) {
-        // front-facing
         rotationCompensation = (sensorOrientation + rotationCompensation) % 360;
       } else {
-        // back-facing
         rotationCompensation = (sensorOrientation - rotationCompensation + 360) % 360;
       }
       rotation = InputImageRotationValue.fromRawValue(rotationCompensation);
-      // print('rotationCompensation: $rotationCompensation');
     }
     if (rotation == null) return null;
+
     final format = InputImageFormatValue.fromRawValue(cameraImage.format.raw);
     if (format == null || (Platform.isAndroid && format != InputImageFormat.nv21) || (Platform.isIOS && format != InputImageFormat.bgra8888)) {
       return null;

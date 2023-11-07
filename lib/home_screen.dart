@@ -1,6 +1,6 @@
 import 'dart:developer';
 
-import 'package:barcode_example/barcode_page.dart';
+import 'package:barcode_example/barcode_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart';
 
@@ -22,7 +22,7 @@ class _HomePageState extends State<HomePage> {
         children: [
           FilledButton(
             onPressed: () {
-              Navigator.of(context).push<List<Barcode>?>(MaterialPageRoute(builder: (context) => const BarcodePage())).then((value) {
+              Navigator.of(context).push<List<Barcode>?>(MaterialPageRoute(builder: (context) => const BarcodeScreen())).then((value) {
                 if (value != null && value.isNotEmpty) {
                   for (var b in value) {
                     log("FORMAT: ${b.format}\nDISPLAY VALUE: ${b.displayValue}\nRAW VALUE: ${b.rawValue}\nBARCODE TYPE: ${b.type}\nBARCODE VALUE: ${b.value}");
